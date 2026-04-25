@@ -54,43 +54,313 @@ export function applyTheme(theme) {
   root.setAttribute('data-theme', active);
 }
 
-// Subset markdown -> HTML with HTML escaping. Renders streamed assistant text only.
+const INLINE_TOKEN = '\u0000yk-md-token-';
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function escapeAttr(value) {
+  return escapeHtml(value).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function sanitizeUrl(url) {
+  const value = String(url || '').trim().replace(/^<|>$/g, '');
+  if (!value || /[\u0000-\u001F\u007F\s]/.test(value)) return '';
+
+  if (/^(#|\/(?!\/)|\.\/|\.\.\/)/.test(value)) return value;
+  if (/^[a-z][a-z\d+.-]*:/i.test(value)) {
+    try {
+      const parsed = new URL(value);
+      return /^(https?:|mailto:)$/i.test(parsed.protocol) ? value : '';
+    } catch {
+      return '';
+    }
+  }
+
+  return '';
+}
+
+function renderLink(url, label, title) {
+  const href = sanitizeUrl(url);
+  if (!href) return escapeHtml(label || url || '');
+  const safeTitle = title ? ` title="${escapeAttr(title)}"` : '';
+  return `<a href="${escapeAttr(href)}" target="_blank" rel="noopener noreferrer"${safeTitle}>${renderInline(label || href)}</a>`;
+}
+
+function autoLink(html) {
+  return html.replace(/(^|[\s(])((?:https?):\/\/[^\s<"']+)(?=$|[\s)])/g, (_, lead, rawUrl) => {
+    let url = rawUrl;
+    let trailing = '';
+    while (/[.,!?;:]$/.test(url)) {
+      trailing = url.slice(-1) + trailing;
+      url = url.slice(0, -1);
+    }
+    return `${lead}<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>${trailing}`;
+  });
+}
+
+function renderInline(text) {
+  const tokens = [];
+  const stash = (html) => {
+    tokens.push(html);
+    return `${INLINE_TOKEN}${tokens.length - 1}\u0000`;
+  };
+
+  let source = String(text || '');
+  source = source.replace(/`([^`\n]+)`/g, (_, code) => stash(`<code>${escapeHtml(code)}</code>`));
+  source = source.replace(
+    /\[([^\]\n]+)\]\((<?[^\s)>]+>?)(?:\s+["']([^"']*)["'])?\)/g,
+    (_, label, url, title) => stash(renderLink(url, label, title))
+  );
+
+  let html = escapeHtml(source);
+  html = html
+    .replace(/(\*\*|__)([\s\S]+?)\1/g, '<strong>$2</strong>')
+    .replace(/~~([\s\S]+?)~~/g, '<del>$1</del>')
+    .replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>')
+    .replace(/(^|[^\w_])_([^_\n]+)_(?![\w_])/g, '$1<em>$2</em>');
+  html = autoLink(html);
+
+  return html.replace(new RegExp(`${INLINE_TOKEN}(\\d+)\\u0000`, 'g'), (_, index) => tokens[Number(index)] || '');
+}
+
+function renderInlineWithBreaks(text) {
+  return renderInline(text).replace(/\n/g, '<br />');
+}
+
+function isFenceStart(line) {
+  return line.match(/^\s*(```+|~~~+)\s*([\w-]+)?\s*$/);
+}
+
+function isListLine(line) {
+  return /^\s{0,3}(?:[-*+]\s+|\d+[.)]\s+)/.test(line);
+}
+
+function isRule(line) {
+  return /^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line);
+}
+
+function splitTableRow(line) {
+  const trimmed = line.trim().replace(/^\|/, '').replace(/\|$/, '');
+  const cells = [];
+  let current = '';
+
+  for (let index = 0; index < trimmed.length; index += 1) {
+    const char = trimmed[index];
+    if (char === '\\' && trimmed[index + 1] === '|') {
+      current += '|';
+      index += 1;
+    } else if (char === '|') {
+      cells.push(current.trim());
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+
+  cells.push(current.trim());
+  return cells;
+}
+
+function isTableSeparator(line) {
+  const cells = splitTableRow(line);
+  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell.trim()));
+}
+
+function isTableStart(lines, index) {
+  return lines[index]?.includes('|') && lines[index + 1] && isTableSeparator(lines[index + 1]);
+}
+
+function tableAlign(cell) {
+  const value = cell.trim();
+  if (value.startsWith(':') && value.endsWith(':')) return 'center';
+  if (value.endsWith(':')) return 'right';
+  if (value.startsWith(':')) return 'left';
+  return '';
+}
+
+function renderTable(lines, start) {
+  const headers = splitTableRow(lines[start]);
+  const aligns = splitTableRow(lines[start + 1]).map(tableAlign);
+  const rows = [];
+  let index = start + 2;
+
+  while (index < lines.length && lines[index].trim() && lines[index].includes('|')) {
+    rows.push(splitTableRow(lines[index]));
+    index += 1;
+  }
+
+  const renderCell = (tag, cell, cellIndex) => {
+    const align = aligns[cellIndex] ? ` style="text-align: ${aligns[cellIndex]}"` : '';
+    return `<${tag}${align}>${renderInline(cell || '')}</${tag}>`;
+  };
+
+  const head = headers.map((cell, cellIndex) => renderCell('th', cell, cellIndex)).join('');
+  const body = rows
+    .map((row) => {
+      const cells = headers.map((_, cellIndex) => renderCell('td', row[cellIndex] || '', cellIndex)).join('');
+      return `<tr>${cells}</tr>`;
+    })
+    .join('');
+
+  return {
+    html: `<div class="markdown-table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`,
+    next: index,
+  };
+}
+
+function renderCodeBlock(lines, start) {
+  const match = isFenceStart(lines[start]);
+  const fence = match[1][0];
+  const size = match[1].length;
+  const lang = match[2] || '';
+  const code = [];
+  let index = start + 1;
+
+  while (index < lines.length) {
+    const closing = lines[index].match(/^\s*(```+|~~~+)\s*$/);
+    if (closing && closing[1][0] === fence && closing[1].length >= size) {
+      index += 1;
+      break;
+    }
+    code.push(lines[index]);
+    index += 1;
+  }
+
+  const safeLang = lang.replace(/[^\w-]/g, '');
+  const languageAttr = safeLang ? ` data-language="${escapeAttr(safeLang)}"` : '';
+  const classAttr = safeLang ? ` class="language-${escapeAttr(safeLang)}"` : '';
+  return {
+    html: `<pre${languageAttr}><code${classAttr}>${escapeHtml(code.join('\n')).trimEnd()}</code></pre>`,
+    next: index,
+  };
+}
+
+function renderList(lines, start) {
+  const ordered = /^\s{0,3}\d+[.)]\s+/.test(lines[start]);
+  const pattern = ordered ? /^\s{0,3}\d+[.)]\s+(.+)$/ : /^\s{0,3}[-*+]\s+(.+)$/;
+  const items = [];
+  let hasTask = false;
+  let index = start;
+
+  while (index < lines.length) {
+    const match = lines[index].match(pattern);
+    if (!match) break;
+
+    const itemLines = [match[1]];
+    index += 1;
+
+    while (index < lines.length && lines[index].trim() && !isListLine(lines[index])) {
+      if (!/^\s{2,}/.test(lines[index])) break;
+      itemLines.push(lines[index].trim());
+      index += 1;
+    }
+
+    let body = itemLines.join('\n');
+    const task = body.match(/^\[( |x|X)\]\s+([\s\S]*)$/);
+    if (task) {
+      hasTask = true;
+      const checked = task[1].toLowerCase() === 'x' ? ' checked' : '';
+      body = `<input type="checkbox" disabled${checked} />${renderInlineWithBreaks(task[2])}`;
+    } else {
+      body = renderInlineWithBreaks(body);
+    }
+    items.push(`<li>${body}</li>`);
+  }
+
+  const tag = ordered ? 'ol' : 'ul';
+  const classAttr = hasTask ? ' class="task-list"' : '';
+  return { html: `<${tag}${classAttr}>${items.join('')}</${tag}>`, next: index };
+}
+
+function startsBlock(lines, index) {
+  const line = lines[index] || '';
+  return (
+    !line.trim() ||
+    isFenceStart(line) ||
+    /^\s{0,3}#{1,6}\s+/.test(line) ||
+    isRule(line) ||
+    /^\s{0,3}>/.test(line) ||
+    isListLine(line) ||
+    isTableStart(lines, index)
+  );
+}
+
+function renderBlocks(lines) {
+  const parts = [];
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = lines[index];
+    if (!line.trim()) {
+      index += 1;
+      continue;
+    }
+
+    if (isFenceStart(line)) {
+      const block = renderCodeBlock(lines, index);
+      parts.push(block.html);
+      index = block.next;
+      continue;
+    }
+
+    const heading = line.match(/^\s{0,3}(#{1,6})\s+(.+)$/);
+    if (heading) {
+      const level = heading[1].length;
+      parts.push(`<h${level}>${renderInline(heading[2].replace(/\s+#+\s*$/, ''))}</h${level}>`);
+      index += 1;
+      continue;
+    }
+
+    if (isRule(line)) {
+      parts.push('<hr />');
+      index += 1;
+      continue;
+    }
+
+    if (/^\s{0,3}>/.test(line)) {
+      const quoted = [];
+      while (index < lines.length && /^\s{0,3}>/.test(lines[index])) {
+        quoted.push(lines[index].replace(/^\s{0,3}> ?/, ''));
+        index += 1;
+      }
+      parts.push(`<blockquote>${renderBlocks(quoted)}</blockquote>`);
+      continue;
+    }
+
+    if (isTableStart(lines, index)) {
+      const table = renderTable(lines, index);
+      parts.push(table.html);
+      index = table.next;
+      continue;
+    }
+
+    if (isListLine(line)) {
+      const list = renderList(lines, index);
+      parts.push(list.html);
+      index = list.next;
+      continue;
+    }
+
+    const paragraph = [];
+    while (index < lines.length && lines[index].trim() && !startsBlock(lines, index)) {
+      paragraph.push(lines[index]);
+      index += 1;
+    }
+    parts.push(`<p>${renderInlineWithBreaks(paragraph.join('\n'))}</p>`);
+  }
+
+  return parts.join('');
+}
+
+// Safe subset markdown -> HTML. Renders streamed assistant text only.
 export function renderMarkdown(text) {
   if (!text) return '';
-  let html = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-
-  html = html.replace(/```(\w+)?\n?([\s\S]*?)```/g, (_, _lang, code) => `<pre><code>${code.trimEnd()}</code></pre>`);
-
-  html = html
-    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
-    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
-    .replace(/^# (.+)$/gm, '<h1>$1</h1>');
-
-  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/`([^`\n]+)`/g, '<code>$1</code>');
-
-  // Auto-link bare URLs (http/https). Must not double-link existing href= or markdown.
-  html = html.replace(/(^|[\s(])((?:https?):\/\/[^\s<)]+)(?=$|[\s)])/g, (_, lead, url) => {
-    return `${lead}<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`;
-  });
-
-  html = html.replace(/(^|\n)((?:- .+(?:\n- .+)*))/g, (_, lead, block) => {
-    const items = block
-      .split('\n')
-      .map((l) => l.replace(/^- /, '').trim())
-      .map((t) => `<li>${t}</li>`)
-      .join('');
-    return `${lead}<ul>${items}</ul>`;
-  });
-  html = html.replace(/(^|\n)((?:\d+\. .+(?:\n\d+\. .+)*))/g, (_, lead, block) => {
-    const items = block
-      .split('\n')
-      .map((l) => l.replace(/^\d+\. /, '').trim())
-      .map((t) => `<li>${t}</li>`)
-      .join('');
-    return `${lead}<ol>${items}</ol>`;
-  });
-
-  return html;
+  return renderBlocks(String(text).replace(/\r\n?/g, '\n').split('\n'));
 }
 
 // Parse streaming buffer for <think>/<thinking> wrappers.
