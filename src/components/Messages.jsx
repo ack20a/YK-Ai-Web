@@ -1,0 +1,252 @@
+import React, { useState } from 'react';
+import * as I from '../icons.jsx';
+import { classNames, parseStream, renderMarkdown, fmtTokens } from '../lib/utils.js';
+
+export function ThinkingBlock({ thinking, isThinking, durationMs }) {
+  const [expanded, setExpanded] = useState(false);
+  const seconds = (durationMs || 0) / 1000;
+  const label = isThinking
+    ? '正在思考…'
+    : `已思考 ${seconds < 1 ? seconds.toFixed(1) : Math.round(seconds)} 秒`;
+  return (
+    <div className="thinking-block">
+      <button
+        className={classNames('thinking-pill', isThinking && 'thinking', expanded && 'expanded')}
+        onClick={() => setExpanded((e) => !e)}
+      >
+        {isThinking ? <span className="spinner" /> : <I.Brain size={13} />}
+        <span>{label}</span>
+        <I.ChevronDown size={13} className="chevron" />
+      </button>
+      {expanded && thinking && <div className="thinking-content">{thinking}</div>}
+    </div>
+  );
+}
+
+export function AgentStep({ step }) {
+  const [expanded, setExpanded] = useState(false);
+  const isSearch = step.kind === 'search';
+  const isFetch = step.kind === 'fetch';
+  const isOcr = step.kind === 'ocr';
+
+  const icon = isSearch ? (
+    <I.Search size={14} />
+  ) : isFetch ? (
+    <I.Link size={14} />
+  ) : isOcr ? (
+    <I.Eye size={14} />
+  ) : (
+    <I.Sparkle size={14} />
+  );
+
+  const title = isSearch
+    ? step.status === 'running'
+      ? '正在搜索…'
+      : step.status === 'error'
+      ? '搜索失败'
+      : `已检索 ${step.count || 0} 条结果`
+    : isFetch
+    ? step.status === 'running'
+      ? `正在抓取 ${step.count || 0} 个网页…`
+      : step.status === 'error'
+      ? '抓取失败'
+      : `已通过 r.jina.ai 抓取 ${step.count || 0} 个网页`
+    : isOcr
+    ? step.status === 'running'
+      ? `正在调用「${step.model || 'OCR'}」识别图像…`
+      : step.status === 'error'
+      ? '图像识别失败'
+      : '已识别图像内容'
+    : step.title;
+
+  const meta = isSearch && step.query
+    ? `Tavily · "${step.query.slice(0, 40)}"`
+    : isFetch
+    ? 'r.jina.ai 代理'
+    : isOcr && step.model
+    ? `${step.model} · 多模态备援`
+    : null;
+
+  const expandable =
+    step.status === 'done' &&
+    ((isSearch && step.results?.length) || (isFetch && step.urls?.length) || (isOcr && step.text));
+
+  return (
+    <div
+      className={classNames(
+        'agent-step',
+        step.status,
+        expandable && 'expandable',
+        expanded && 'expanded'
+      )}
+      onClick={() => expandable && setExpanded((e) => !e)}
+    >
+      <div className="agent-step-icon">
+        {step.status === 'running' ? (
+          <span
+            className="spinner"
+            style={{
+              width: 12,
+              height: 12,
+              border: '1.5px solid var(--border-strong)',
+              borderTopColor: 'var(--fg)',
+              borderRadius: '50%',
+              animation: 'spin 0.8s linear infinite',
+            }}
+          />
+        ) : (
+          icon
+        )}
+      </div>
+      <div className="agent-step-body">
+        <div className="agent-step-title">
+          {title}
+          {expandable && <I.ChevronDown size={12} className="agent-step-chevron" />}
+        </div>
+        {meta && <div className="agent-step-meta">{meta}</div>}
+        {step.status === 'error' && step.error && (
+          <div className="agent-step-meta" style={{ color: 'var(--danger)' }}>
+            {step.error}
+          </div>
+        )}
+        {expanded && isSearch && step.results && (
+          <div className="agent-step-results">
+            {step.results.map((r, i) => (
+              <a
+                key={i}
+                href={r.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="agent-step-result"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="agent-step-result-title">{r.title || r.url}</div>
+                <div className="agent-step-result-url">{r.url}</div>
+              </a>
+            ))}
+          </div>
+        )}
+        {expanded && isFetch && step.urls && (
+          <div className="agent-step-results">
+            {step.urls.map((u, i) => (
+              <a
+                key={i}
+                href={`https://r.jina.ai/${u}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="agent-step-result"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="agent-step-result-url">https://r.jina.ai/{u}</div>
+              </a>
+            ))}
+          </div>
+        )}
+        {expanded && isOcr && step.text && (
+          <div className="agent-step-results">
+            <div className="agent-step-result" style={{ whiteSpace: 'pre-wrap' }}>
+              {step.text}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MessageMeta({ msg, onRegenerate, onCopy, copied }) {
+  const stats = msg.stats;
+  return (
+    <div className="message-meta">
+      <div className="message-meta-actions">
+        <button
+          className={classNames('message-action-btn', copied && 'copied')}
+          title={copied ? '已复制' : '复制'}
+          onClick={onCopy}
+        >
+          {copied ? <I.Check size={14} /> : <I.Copy size={14} />}
+        </button>
+        <button className="message-action-btn" title="重新生成" onClick={onRegenerate}>
+          <I.Refresh size={14} />
+        </button>
+      </div>
+      {msg.ocrUsed && (
+        <span className="ocr-badge" title="此模型不支持图像，已通过 OCR 模型转写">
+          <I.Eye size={11} /> OCR · {msg.ocrUsed}
+        </span>
+      )}
+      {stats && stats.completionTokens > 0 && (
+        <>
+          <span className="message-stat">{stats.tps.toFixed(1)} tok/s</span>
+          <span className="message-stat-divider">·</span>
+          <span className="message-stat">{fmtTokens(stats.completionTokens)} tokens</span>
+          <span className="message-stat-divider">·</span>
+          <span className="message-stat">{stats.elapsed.toFixed(1)}s</span>
+        </>
+      )}
+    </div>
+  );
+}
+
+export function UserMessage({ msg }) {
+  const text = typeof msg.content === 'string' ? msg.content : '';
+  return (
+    <div className="message-group">
+      {msg.images && msg.images.length > 0 && (
+        <div className="message-user-images">
+          {msg.images.map((src, i) => (
+            <div key={i} className="message-user-image" style={{ backgroundImage: `url(${src})` }} />
+          ))}
+        </div>
+      )}
+      {text && (
+        <div className="message-user">
+          <div className="message-user-bubble">{text}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function AssistantMessage({ msg, onRegenerate }) {
+  const [copied, setCopied] = useState(false);
+  const parsed = parseStream(msg.content || '');
+  const html = { __html: renderMarkdown(parsed.content) };
+
+  function copy() {
+    const txt = parsed.content || msg.content || '';
+    navigator.clipboard?.writeText(txt).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  }
+
+  return (
+    <div className="message-group">
+      <div className="message-assistant">
+        {msg.agentSteps && msg.agentSteps.length > 0 && (
+          <div className="agent-steps">
+            {msg.agentSteps.map((s) => (
+              <AgentStep key={s.id} step={s} />
+            ))}
+          </div>
+        )}
+        {parsed.hasThinking && (
+          <ThinkingBlock
+            thinking={parsed.thinking}
+            isThinking={parsed.isThinking && msg.streaming}
+            durationMs={msg.thinkingMs || 0}
+          />
+        )}
+        <div className="message-assistant-content" dangerouslySetInnerHTML={html} />
+        {msg.streaming && !parsed.isThinking && <span className="cursor" />}
+        {!msg.streaming && (msg.stats || msg.ocrUsed) && (
+          <MessageMeta msg={msg} onRegenerate={onRegenerate} onCopy={copy} copied={copied} />
+        )}
+        {msg.error && (
+          <div style={{ color: 'var(--danger)', fontSize: 13, marginTop: 8 }}>出错了：{msg.error}</div>
+        )}
+      </div>
+    </div>
+  );
+}
