@@ -17,9 +17,12 @@ export default function ChatView({
   const [streaming, setStreaming] = useState(false);
   const streamRef = useRef(null);
   const scrollRef = useRef(null);
+  const followScrollRef = useRef(true);
 
   const conv = state.activeConversationId ? state.conversations[state.activeConversationId] : null;
   const messages = conv?.messages || [];
+  const lastMessage = messages[messages.length - 1];
+  const lastAgentStepCount = lastMessage?.agentSteps?.length || 0;
   const enabledModels = (config?.models || []).filter((m) => m.enabled);
   const currentModel =
     enabledModels.find((m) => m.id === state.selectedModelId) || enabledModels[0] || null;
@@ -27,11 +30,36 @@ export default function ChatView({
     ? (config.models || []).find((m) => m.id === config.ocrModelId && m.vision)
     : null;
 
-  useEffect(() => {
+  function isNearBottom(el) {
+    return el.scrollHeight - el.scrollTop - el.clientHeight < 96;
+  }
+
+  function scrollToBottom() {
     const el = scrollRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
-  }, [messages.length, messages[messages.length - 1]?.content]);
+  }
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      followScrollRef.current = isNearBottom(el);
+    };
+    onScroll();
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => el.removeEventListener('scroll', onScroll);
+  }, [state.activeConversationId]);
+
+  useEffect(() => {
+    followScrollRef.current = true;
+    const frame = requestAnimationFrame(scrollToBottom);
+    return () => cancelAnimationFrame(frame);
+  }, [state.activeConversationId]);
+
+  useEffect(() => {
+    if (followScrollRef.current) scrollToBottom();
+  }, [messages.length, lastMessage?.content, lastAgentStepCount]);
 
   useEffect(() => {
     function close(e) {
@@ -95,6 +123,7 @@ export default function ChatView({
       agentSteps: [],
       ts: Date.now(),
     };
+    followScrollRef.current = true;
     if (images?.length && !currentModel.vision && ocrModel) {
       assistantMsg.ocrUsed = ocrModel.name;
     }
@@ -206,6 +235,7 @@ export default function ChatView({
         thinkingMs: 0,
       },
     });
+    followScrollRef.current = true;
     setStreaming(true);
     const startTs = performance.now();
     streamRef.current = startChat({

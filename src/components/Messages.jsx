@@ -1,6 +1,27 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import * as I from '../icons.jsx';
 import { classNames, parseStream, renderMarkdown, fmtTokens } from '../lib/utils.js';
+
+function ImageLightbox({ src, onClose }) {
+  useEffect(() => {
+    if (!src) return undefined;
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [src, onClose]);
+
+  if (!src) return null;
+  return (
+    <div className="image-lightbox" onClick={onClose}>
+      <button className="image-lightbox-close" onClick={onClose} title="关闭预览">
+        <I.X size={18} />
+      </button>
+      <img src={src} alt="图片预览" onClick={(e) => e.stopPropagation()} />
+    </div>
+  );
+}
 
 export function ThinkingBlock({ thinking, isThinking, durationMs }) {
   const [expanded, setExpanded] = useState(false);
@@ -254,13 +275,21 @@ function MessageMeta({ msg, onRegenerate, onCopy, copied }) {
 }
 
 export function UserMessage({ msg }) {
+  const [previewSrc, setPreviewSrc] = useState(null);
   const text = typeof msg.content === 'string' ? msg.content : '';
   return (
     <div className="message-group">
       {msg.images && msg.images.length > 0 && (
         <div className="message-user-images">
           {msg.images.map((src, i) => (
-            <div key={i} className="message-user-image" style={{ backgroundImage: `url(${src})` }} />
+            <button
+              key={i}
+              className="message-user-image"
+              style={{ backgroundImage: `url(${src})` }}
+              onClick={() => setPreviewSrc(src)}
+              title="点击预览图片"
+              aria-label={`预览第 ${i + 1} 张图片`}
+            />
           ))}
         </div>
       )}
@@ -269,6 +298,7 @@ export function UserMessage({ msg }) {
           <div className="message-user-bubble">{text}</div>
         </div>
       )}
+      <ImageLightbox src={previewSrc} onClose={() => setPreviewSrc(null)} />
     </div>
   );
 }
