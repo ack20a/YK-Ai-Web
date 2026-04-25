@@ -5,7 +5,7 @@ import ChatView from './components/ChatView.jsx';
 import Settings from './components/Settings.jsx';
 import Admin from './components/Admin.jsx';
 import { api } from './lib/api.js';
-import { applyTheme, loadToken, saveToken } from './lib/utils.js';
+import { applyTheme, loadToken, saveToken, ensureMathJax } from './lib/utils.js';
 import { reducer, loadUserState, saveUserState, loadGlobalPrefs, saveGlobalPrefs, DEFAULT_USER_STATE } from './store.js';
 
 function Loading({ label = '加载中…' }) {
@@ -33,6 +33,9 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      // Pre-initialize MathJax in the background.
+      ensureMathJax();
+
       // Apply saved theme even before login.
       const prefs = loadGlobalPrefs();
       if (prefs.theme) applyTheme(prefs.theme);

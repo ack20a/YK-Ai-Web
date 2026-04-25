@@ -1,5 +1,4 @@
 // Shared client utilities: id, persistence, theme, light markdown, formatting.
-import katex from 'katex';
 
 const STORAGE_KEY = 'yk-ai-web/v1';
 const TOKEN_KEY = 'yk-ai-web/token';
@@ -57,17 +56,50 @@ export function applyTheme(theme) {
 
 const INLINE_TOKEN = '\u0000yk-md-token-';
 
-function renderMath(tex, displayMode = false) {
+let mathReady = null;
+
+export function ensureMathJax() {
+  if (!mathReady) {
+    if (window.MathJax && window.MathJax.startup) {
+      mathReady = Promise.resolve();
+    } else {
+      mathReady = new Promise((resolve, reject) => {
+        const oldConfig = window.MathJax;
+        window.MathJax = {
+          tex: {
+            inlineMath: [],
+            displayMath: [],
+          },
+          chtml: {
+            fontURL: 'https://cdn.jsdelivr.net/npm/mathjax@3/es5/output/chtml/fonts/woff-v2',
+          },
+          startup: {
+            typeset: false,
+            pageReady: () => resolve(),
+          },
+        };
+        if (oldConfig && oldConfig.startup) {
+          Object.assign(window.MathJax, oldConfig);
+        }
+        const script = document.createElement('script');
+        script.src = 'https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js';
+        script.async = true;
+        script.onerror = () => { mathReady = null; reject(new Error('MathJax load failed')); };
+        document.head.appendChild(script);
+      });
+    }
+  }
+  return mathReady;
+}
+
+function renderMathSync(tex, displayMode = false) {
   const source = String(tex || '').trim();
   if (!source) return '';
+  if (!window.MathJax || !window.MathJax.startup) return `<code>${escapeHtml(source)}</code>`;
   try {
-    return katex.renderToString(source, {
-      displayMode,
-      throwOnError: false,
-      strict: false,
-      trust: false,
-      output: 'html',
-    });
+    const { document: doc, adaptor } = window.MathJax.startup;
+    const node = doc.convert(source, { display: displayMode });
+    return adaptor.outerHTML(node);
   } catch {
     return `<code>${escapeHtml(source)}</code>`;
   }
@@ -129,8 +161,8 @@ function renderInline(text) {
 
   let source = String(text || '');
   source = source.replace(/`([^`\n]+)`/g, (_, code) => stash(`<code>${escapeHtml(code)}</code>`));
-  source = source.replace(/(\\{1,2})\(([\s\S]+?)\1\)/g, (_, _slash, tex) => stash(renderMath(tex, false)));
-  source = source.replace(/(^|[^\\$])\$([^$\n]+?)\$(?!\$)/g, (_, lead, tex) => `${lead}${stash(renderMath(tex, false))}`);
+  source = source.replace(/(\\{1,2})\(([\s\S]+?)\1\)/g, (_, _slash, tex) => stash(renderMathSync(tex, false)));
+  source = source.replace(/(^|[^\\$])\$([^$\n]+?)\$(?!\$)/g, (_, lead, tex) => `${lead}${stash(renderMathSync(tex, false))}`);
   source = source.replace(
     /\[([^\]\n]+)\]\((<?[^\s)>]+>?)(?:\s+["']([^"']*)["'])?\)/g,
     (_, label, url, title) => stash(renderLink(url, label, title))
@@ -280,7 +312,7 @@ function renderDisplayMath(lines, start) {
 
   if (first.includes(close)) {
     math.push(first.slice(0, first.indexOf(close)));
-    return { html: `<div class="math-display">${renderMath(math.join('\n'), true)}</div>`, next: start + 1 };
+    return { html: `<div class="math-display">${renderMathSync(math.join('\n'), true)}</div>`, next: start + 1 };
   }
 
   if (first) math.push(first);
@@ -297,7 +329,7 @@ function renderDisplayMath(lines, start) {
     index += 1;
   }
 
-  return { html: `<div class="math-display">${renderMath(math.join('\n'), true)}</div>`, next: index };
+  return { html: `<div class="math-display">${renderMathSync(math.join('\n'), true)}</div>`, next: index };
 }
 
 function renderList(lines, start) {
@@ -428,6 +460,12 @@ function renderBlocks(lines) {
 // Safe subset markdown -> HTML. Renders streamed assistant text only.
 export function renderMarkdown(text) {
   if (!text) return '';
+  return renderBlocks(String(text).replace(/\r\n?/g, '\n').split('\n'));
+}
+
+export async function renderMarkdownAsync(text) {
+  if (!text) return '';
+  await ensureMathJax();
   return renderBlocks(String(text).replace(/\r\n?/g, '\n').split('\n'));
 }
 

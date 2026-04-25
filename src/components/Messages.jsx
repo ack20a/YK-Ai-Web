@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import * as I from '../icons.jsx';
-import { classNames, parseStream, renderMarkdown, fmtTokens } from '../lib/utils.js';
+import { classNames, parseStream, renderMarkdown, renderMarkdownAsync, fmtTokens } from '../lib/utils.js';
 
 function ImageLightbox({ src, onClose }) {
   useEffect(() => {
@@ -306,7 +306,15 @@ export function UserMessage({ msg }) {
 export function AssistantMessage({ msg, onRegenerate }) {
   const [copied, setCopied] = useState(false);
   const parsed = parseStream(msg.content || '');
-  const html = { __html: renderMarkdown(parsed.content) };
+  const [html, setHtml] = useState(() => ({ __html: renderMarkdown(parsed.content) }));
+
+  useEffect(() => {
+    let cancelled = false;
+    renderMarkdownAsync(parsed.content).then((result) => {
+      if (!cancelled) setHtml({ __html: result });
+    });
+    return () => { cancelled = true; };
+  }, [parsed.content]);
 
   function copy() {
     const txt = parsed.content || msg.content || '';
