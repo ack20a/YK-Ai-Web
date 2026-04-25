@@ -78,6 +78,7 @@ const DEFAULT_CONFIG = {
   tavilyMaxResults: 10,
   fetchTopK: 3,
   jinaFetchEnabled: false,
+  searchAgentMaxRounds: 2,
 };
 
 export async function getConfig() {

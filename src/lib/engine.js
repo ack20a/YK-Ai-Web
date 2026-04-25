@@ -1,24 +1,244 @@
-// Real chat engine: orchestrates optional search/fetch agent steps, OCR fallback,
+// Real chat engine: orchestrates optional model-planned search/fetch agent steps, OCR fallback,
 // then opens an SSE stream against /api/chat and feeds chunks to the UI.
 import { api } from './api.js';
 import { uid, parseStream, tokenEstimate } from './utils.js';
 
 const MAX_FETCH_TEXT_CHARS = 80 * 1024;
+const MAX_CONTEXT_PAGE_CHARS = 20 * 1024;
+const MAX_REVIEW_PAGE_CHARS = 3600;
+const MAX_AGENT_QUERIES = 2;
+
+function clampNumber(value, min, max, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(n)));
+}
+
+function trimText(text, max) {
+  const value = String(text || '').trim();
+  if (value.length <= max) return value;
+  return value.slice(0, max) + '\n…（已截断）';
+}
 
 function trimFetchedText(text) {
-  const value = String(text || '').trim();
-  if (value.length <= MAX_FETCH_TEXT_CHARS) return value;
-  return value.slice(0, MAX_FETCH_TEXT_CHARS) + '\n…（已截断）';
+  return trimText(text, MAX_FETCH_TEXT_CHARS);
 }
 
 function toDisplayResults(results) {
   return (results || []).map(({ raw_content: _rawContent, ...result }) => result);
 }
 
-function buildSearchContext(searchResults, fetched) {
+function normalizeQueries(queries, fallback = '') {
+  const source = Array.isArray(queries) ? queries : queries ? [queries] : [];
+  const seen = new Set();
+  const normalized = source
+    .map((q) => String(q || '').replace(/\s+/g, ' ').trim())
+    .filter((q) => q.length >= 2 && q.length <= 120)
+    .filter((q) => {
+      const key = q.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, MAX_AGENT_QUERIES);
+
+  if (!normalized.length && fallback) return [trimText(fallback.replace(/\s+/g, ' '), 120)];
+  return normalized;
+}
+
+function uniqueResults(results, seenUrls = new Set()) {
+  const out = [];
+  for (const r of results || []) {
+    if (!r?.url || seenUrls.has(r.url)) continue;
+    seenUrls.add(r.url);
+    out.push(r);
+  }
+  return out;
+}
+
+function extractJsonObject(text) {
+  const raw = String(text || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = fenced ? fenced[1].trim() : raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1);
+  if (!candidate) return null;
+  try {
+    return JSON.parse(candidate);
+  } catch {
+    return null;
+  }
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw new Error('aborted');
+}
+
+function formatRecentHistory(history) {
+  return (history || [])
+    .slice(-6)
+    .map((m) => {
+      const role = m.role === 'assistant' ? '助手' : '用户';
+      const content = typeof m.content === 'string' ? parseStream(m.content).content || m.content : '';
+      return `${role}：${trimText(content, 600)}`;
+    })
+    .filter(Boolean)
+    .join('\n');
+}
+
+async function runAgentJson({ model, messages, maxTokens = 800, signal }) {
+  throwIfAborted(signal);
+  const res = await api.chatStream({
+    model: model.id,
+    messages,
+    stream: false,
+    temperature: 0.2,
+    max_tokens: maxTokens,
+  });
+  throwIfAborted(signal);
+  if (!res.ok) {
+    const t = await res.text().catch(() => '');
+    throw new Error(t || `搜索代理模型调用失败（${res.status}）`);
+  }
+  const data = await res.json();
+  const content = data?.choices?.[0]?.message?.content || '';
+  return { raw: content, json: extractJsonObject(content) };
+}
+
+async function planSearchRound({ model, prompt, history, round, previousReview, suggestedQueries, signal, onAgent }) {
+  const stepId = uid('step');
+  onAgent({
+    type: 'add',
+    step: { id: stepId, kind: 'plan', status: 'running', round, title: `正在规划第 ${round} 轮搜索…` },
+  });
+
+  const historyText = formatRecentHistory(history);
+  const hint = suggestedQueries?.length ? `\n上一轮建议的搜索词：${suggestedQueries.join('；')}` : '';
+  const review = previousReview ? `\n上一轮资料评估：${previousReview}` : '';
+  let json = null;
+  try {
+    const res = await runAgentJson({
+      model,
+      signal,
+      maxTokens: 700,
+      messages: [
+        {
+          role: 'user',
+          content: `你是联网搜索规划器。请根据用户问题和最近对话，决定下一轮应该搜索什么。\n\n要求：\n- 只输出 JSON 对象，不要输出 Markdown。\n- 不要把用户整段问题原样作为搜索词，要提炼成适合 Tavily 的关键词。\n- 最多给出 ${MAX_AGENT_QUERIES} 个搜索词。\n- 如果不需要继续联网搜索，search_needed=false 且 queries=[]。\n- reason 只写一句对外可展示的规划摘要，不要写隐藏推理过程。\n\nJSON 格式：\n{"search_needed":true,"reason":"...","queries":["..."]}\n\n最近对话：\n${historyText || '（无）'}\n\n用户问题：${prompt}${review}${hint}`,
+        },
+      ],
+    });
+    json = res.json;
+  } catch (e) {
+    const queries = normalizeQueries(suggestedQueries?.length ? suggestedQueries : [prompt]);
+    const reason = '搜索规划失败，已使用问题关键词继续检索。';
+    onAgent({
+      type: 'update',
+      id: stepId,
+      patch: { status: 'done', searchNeeded: true, queries, reason, warning: String(e.message || e) },
+    });
+    return { searchNeeded: true, queries, reason };
+  }
+
+  const searchNeeded = json?.search_needed !== false;
+  const queries = searchNeeded ? normalizeQueries(json?.queries, round === 1 ? prompt : '') : [];
+  const reason = trimText(json?.reason || (queries.length ? '已生成搜索词。' : '无需继续搜索。'), 120);
+  const plan = { searchNeeded: searchNeeded && queries.length > 0, queries, reason };
+  onAgent({
+    type: 'update',
+    id: stepId,
+    patch: { status: 'done', searchNeeded: plan.searchNeeded, queries, reason },
+  });
+  return plan;
+}
+
+function formatReviewMaterials(fetched, results) {
+  if (fetched.length) {
+    return fetched
+      .map((f) => {
+        const title = f.title ? `标题：${f.title}\n` : '';
+        return `[${f.id}] ${title}URL：${f.url}\n搜索词：${f.query || '未知'}\n正文摘录：\n${trimText(f.text, MAX_REVIEW_PAGE_CHARS)}`;
+      })
+      .join('\n\n');
+  }
+  return (results || [])
+    .slice(0, 8)
+    .map((r, i) => `[R${i + 1}] 标题：${r.title || '(无标题)'}\nURL：${r.url}\n摘要：${r.content || '（无摘要）'}`)
+    .join('\n\n');
+}
+
+function normalizeRelevantIds(value, fetched) {
+  const ids = new Set(fetched.map((f) => f.id));
+  const byPosition = fetched.reduce((acc, f, index) => ({ ...acc, [String(index + 1)]: f.id }), {});
+  const normalized = (Array.isArray(value) ? value : [])
+    .map((id) => String(id || '').trim().toUpperCase().replace(/^#/, ''))
+    .map((id) => (ids.has(id) ? id : byPosition[id] || (ids.has(`S${id}`) ? `S${id}` : '')))
+    .filter(Boolean);
+  return [...new Set(normalized)];
+}
+
+async function reviewSearchRound({ model, prompt, history, round, fetched, results, signal, onAgent }) {
+  const stepId = uid('step');
+  onAgent({
+    type: 'add',
+    step: { id: stepId, kind: 'review', status: 'running', round, title: `正在评估第 ${round} 轮资料…` },
+  });
+
+  if (!fetched.length && !results.length) {
+    const review = {
+      assessment: '本轮没有获得可用搜索结果。',
+      relevantIds: [],
+      needMore: true,
+      nextQueries: normalizeQueries([prompt]),
+    };
+    onAgent({ type: 'update', id: stepId, patch: { status: 'done', ...review } });
+    return review;
+  }
+
+  let json = null;
+  try {
+    const res = await runAgentJson({
+      model,
+      signal,
+      maxTokens: 900,
+      messages: [
+        {
+          role: 'user',
+          content: `你是搜索结果评估器。请判断已获取资料是否能回答用户问题，并决定是否需要继续搜索。\n\n要求：\n- 只输出 JSON 对象，不要输出 Markdown。\n- assessment 写一句对外可展示的评估摘要，不要写隐藏推理过程。\n- relevant_source_ids 只能包含资料编号，如 ["S1","S3"]；如果没有相关资料则为空数组。\n- 如果资料不足或明显不相关，need_more=true，并给出最多 ${MAX_AGENT_QUERIES} 个 next_queries。\n- 如果资料已足够，need_more=false，next_queries=[]。\n\nJSON 格式：\n{"assessment":"...","relevant_source_ids":["S1"],"need_more":false,"next_queries":[]}\n\n最近对话：\n${formatRecentHistory(history) || '（无）'}\n\n用户问题：${prompt}\n\n本轮资料：\n${formatReviewMaterials(fetched, results)}`,
+        },
+      ],
+    });
+    json = res.json;
+  } catch (e) {
+    const review = {
+      assessment: '资料评估失败，已保留本轮获取到的正文供最终回答参考。',
+      relevantIds: fetched.map((f) => f.id),
+      needMore: false,
+      nextQueries: [],
+      warning: String(e.message || e),
+    };
+    onAgent({ type: 'update', id: stepId, patch: { status: 'done', ...review } });
+    return review;
+  }
+
+  const relevantIds = normalizeRelevantIds(json?.relevant_source_ids, fetched);
+  const nextQueries = normalizeQueries(json?.next_queries || [], '');
+  const review = {
+    assessment: trimText(json?.assessment || '已完成资料相关性评估。', 160),
+    relevantIds,
+    needMore: !!json?.need_more && nextQueries.length > 0,
+    nextQueries,
+  };
+  onAgent({ type: 'update', id: stepId, patch: { status: 'done', ...review } });
+  return review;
+}
+
+function buildSearchContext(searchResults, fetched, reviews = []) {
   const lines = [];
+  if (reviews.length) {
+    lines.push('以下是搜索代理对资料相关性的评估摘要：');
+    reviews.forEach((r, i) => lines.push(`第 ${i + 1} 轮：${r.assessment}`));
+  }
   if (searchResults?.length) {
-    lines.push('以下是来自 Tavily 搜索的若干结果（按相关度排序）：');
+    lines.push(`${lines.length ? '\n' : ''}以下是来自 Tavily 搜索的若干结果（按相关度排序）：`);
     searchResults.forEach((r, i) => {
       lines.push(`[${i + 1}] ${r.title || '(无标题)'} — ${r.url}`);
       if (r.content) lines.push(`    摘要：${r.content.slice(0, 280)}`);
@@ -28,7 +248,8 @@ function buildSearchContext(searchResults, fetched) {
     lines.push('\n以下是其中部分网页的正文（可能被截断）：');
     fetched.forEach((f, i) => {
       const source = f.source === 'jina' ? 'r.jina.ai' : 'Tavily';
-      lines.push(`\n--- 页面 ${i + 1}: ${f.url}（${source}）---\n${f.text}`);
+      const label = f.id ? `资料 ${f.id}` : `页面 ${i + 1}`;
+      lines.push(`\n--- ${label}: ${f.url}（${source}）---\n${trimText(f.text, MAX_CONTEXT_PAGE_CHARS)}`);
     });
   }
   if (!lines.length) return '';
@@ -142,88 +363,164 @@ export function startChat({
 
   async function run() {
     try {
-      let augmentedPrompt = prompt;
       const augContext = [];
 
       // 1) Optional web search agent
       if (webSearchEnabled && prompt) {
         const useJinaFetch = !!config?.jinaFetchEnabled;
-        const requestedTopK = Math.max(0, Math.min(10, Number(config?.fetchTopK ?? 3) || 0));
-        const stepId = uid('step');
-        onAgent({
-          type: 'add',
-          step: { id: stepId, kind: 'search', status: 'running', query: prompt, results: [] },
-        });
-        let results = [];
-        try {
-          const res = await api.search(prompt, {
-            max_results: config?.tavilyMaxResults || 10,
-            search_depth: config?.tavilySearchDepth || 'basic',
-            include_raw_content: !useJinaFetch && requestedTopK > 0,
-          });
-          results = Array.isArray(res?.results) ? res.results : [];
-          onAgent({
-            type: 'update',
-            id: stepId,
-            patch: { status: 'done', count: results.length, results: toDisplayResults(results) },
-          });
-        } catch (e) {
-          onAgent({
-            type: 'update',
-            id: stepId,
-            patch: { status: 'error', error: String(e.message || e) },
-          });
-        }
+        const requestedTopK = clampNumber(config?.fetchTopK, 0, 10, 3);
+        const maxRounds = clampNumber(config?.searchAgentMaxRounds, 1, 3, 2);
+        const maxResults = clampNumber(config?.tavilyMaxResults, 1, 20, 10);
+        const searchDepth = config?.tavilySearchDepth === 'advanced' ? 'advanced' : 'basic';
+        const allResults = [];
+        const allFetched = [];
+        const reviews = [];
+        const relevantIds = new Set();
+        const seenUrls = new Set();
+        let previousReview = '';
+        let suggestedQueries = [];
+        let sourceSeq = 0;
 
-        // 2) Fetch top-k pages. Default to Tavily raw_content; Jina is an optional fallback path.
-        const topK = Math.max(0, Math.min(results.length, requestedTopK));
-        const fetched = [];
-        if (topK > 0) {
-          const urls = results.slice(0, topK).map((r) => r.url).filter(Boolean);
-          const fetchStepId = uid('step');
-          if (useJinaFetch) {
+        for (let round = 1; round <= maxRounds; round += 1) {
+          const plan = await planSearchRound({
+            model,
+            prompt,
+            history,
+            round,
+            previousReview,
+            suggestedQueries,
+            signal: controller.signal,
+            onAgent,
+          });
+          throwIfAborted(controller.signal);
+          if (!plan.searchNeeded) break;
+
+          const roundResults = [];
+          for (const query of plan.queries) {
+            const stepId = uid('step');
             onAgent({
               type: 'add',
-              step: {
-                id: fetchStepId,
-                kind: 'fetch',
-                source: 'jina',
-                status: 'running',
-                urls,
-                count: urls.length,
-              },
+              step: { id: stepId, kind: 'search', status: 'running', round, query, results: [] },
             });
-            await Promise.all(
-              urls.map(async (u) => {
-                try {
-                  const text = await api.fetchUrl(u);
-                  fetched.push({ url: u, text: trimFetchedText(text), source: 'jina' });
-                } catch (e) {
-                  fetched.push({ url: u, text: `（抓取失败：${e.message || e}）`, source: 'jina' });
-                }
-              })
-            );
-            onAgent({ type: 'update', id: fetchStepId, patch: { status: 'done' } });
-          } else {
-            results.slice(0, topK).forEach((r) => {
-              const text = trimFetchedText(r.raw_content || r.content || '');
-              if (r.url && text) fetched.push({ url: r.url, text, source: 'tavily' });
-            });
-            onAgent({
-              type: 'add',
-              step: {
-                id: fetchStepId,
-                kind: 'fetch',
-                source: 'tavily',
-                status: 'done',
-                urls,
-                count: fetched.length,
-              },
-            });
+            try {
+              const res = await api.search(query, {
+                max_results: maxResults,
+                search_depth: searchDepth,
+                include_raw_content: !useJinaFetch && requestedTopK > 0,
+              });
+              const queryResults = (Array.isArray(res?.results) ? res.results : []).map((r) => ({ ...r, query }));
+              roundResults.push(...queryResults);
+              onAgent({
+                type: 'update',
+                id: stepId,
+                patch: { status: 'done', count: queryResults.length, results: toDisplayResults(queryResults) },
+              });
+            } catch (e) {
+              onAgent({
+                type: 'update',
+                id: stepId,
+                patch: { status: 'error', error: String(e.message || e) },
+              });
+            }
+            throwIfAborted(controller.signal);
           }
+
+          const uniqueRoundResults = uniqueResults(roundResults, seenUrls);
+          allResults.push(...uniqueRoundResults);
+          const roundFetched = [];
+          const topK = Math.max(0, Math.min(uniqueRoundResults.length, requestedTopK));
+          if (topK > 0) {
+            const selected = uniqueRoundResults.slice(0, topK);
+            const urls = selected.map((r) => r.url).filter(Boolean);
+            const fetchStepId = uid('step');
+            if (useJinaFetch) {
+              onAgent({
+                type: 'add',
+                step: {
+                  id: fetchStepId,
+                  kind: 'fetch',
+                  source: 'jina',
+                  status: 'running',
+                  round,
+                  urls,
+                  count: urls.length,
+                },
+              });
+              const fetched = await Promise.all(
+                selected.map(async (r) => {
+                  try {
+                    const text = await api.fetchUrl(r.url);
+                    return {
+                      id: `S${++sourceSeq}`,
+                      title: r.title,
+                      url: r.url,
+                      query: r.query,
+                      text: trimFetchedText(text),
+                      source: 'jina',
+                    };
+                  } catch (e) {
+                    return {
+                      id: `S${++sourceSeq}`,
+                      title: r.title,
+                      url: r.url,
+                      query: r.query,
+                      text: `（抓取失败：${e.message || e}）`,
+                      source: 'jina',
+                    };
+                  }
+                })
+              );
+              roundFetched.push(...fetched);
+              onAgent({ type: 'update', id: fetchStepId, patch: { status: 'done', count: fetched.length } });
+            } else {
+              selected.forEach((r) => {
+                const text = trimFetchedText(r.raw_content || r.content || '');
+                if (!r.url || !text) return;
+                roundFetched.push({
+                  id: `S${++sourceSeq}`,
+                  title: r.title,
+                  url: r.url,
+                  query: r.query,
+                  text,
+                  source: 'tavily',
+                });
+              });
+              onAgent({
+                type: 'add',
+                step: {
+                  id: fetchStepId,
+                  kind: 'fetch',
+                  source: 'tavily',
+                  status: 'done',
+                  round,
+                  urls,
+                  count: roundFetched.length,
+                },
+              });
+            }
+          }
+
+          allFetched.push(...roundFetched);
+          const review = await reviewSearchRound({
+            model,
+            prompt,
+            history,
+            round,
+            fetched: roundFetched,
+            results: uniqueRoundResults,
+            signal: controller.signal,
+            onAgent,
+          });
+          reviews.push(review);
+          review.relevantIds.forEach((id) => relevantIds.add(id));
+          previousReview = review.assessment;
+          suggestedQueries = review.nextQueries;
+          if (!review.needMore || !suggestedQueries.length) break;
         }
 
-        const ctx = buildSearchContext(results, fetched);
+        const relevantFetched = allFetched.filter((f) => relevantIds.has(f.id));
+        const fetchedForContext = relevantFetched.length ? relevantFetched : reviews.length ? [] : allFetched;
+        const ctx = buildSearchContext(toDisplayResults(allResults), fetchedForContext, reviews);
         if (ctx) augContext.push(ctx);
       }
 

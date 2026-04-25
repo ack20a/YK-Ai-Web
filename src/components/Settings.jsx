@@ -119,7 +119,7 @@ function SearchTab({ state, dispatch }) {
         <br />
         • 兼容模式：管理员可开启 <code style={{ fontFamily: 'var(--font-mono)' }}>r.jina.ai</code> 抓取正文
         <br />
-        • 检索深度、结果数、抓取条数与 Jina 开关由管理员在控制台配置
+        • 检索深度、结果数、抓取条数、规划轮次与 Jina 开关由管理员在控制台配置
       </div>
     </div>
   );

@@ -28,7 +28,10 @@ export function AgentStep({ step }) {
   const isSearch = step.kind === 'search';
   const isFetch = step.kind === 'fetch';
   const isOcr = step.kind === 'ocr';
+  const isPlan = step.kind === 'plan';
+  const isReview = step.kind === 'review';
   const fetchSource = step.source === 'tavily' ? 'Tavily' : 'r.jina.ai';
+  const roundPrefix = step.round ? `第 ${step.round} 轮 · ` : '';
 
   const icon = isSearch ? (
     <I.Search size={14} />
@@ -36,11 +39,23 @@ export function AgentStep({ step }) {
     <I.Link size={14} />
   ) : isOcr ? (
     <I.Eye size={14} />
+  ) : isPlan || isReview ? (
+    <I.Brain size={14} />
   ) : (
     <I.Sparkle size={14} />
   );
 
-  const title = isSearch
+  const title = isPlan
+    ? step.status === 'running'
+      ? step.title || '正在规划搜索…'
+      : step.searchNeeded === false
+      ? '无需继续搜索'
+      : `已规划第 ${step.round || 1} 轮搜索`
+    : isReview
+    ? step.status === 'running'
+      ? step.title || '正在评估搜索资料…'
+      : `已评估第 ${step.round || 1} 轮资料`
+    : isSearch
     ? step.status === 'running'
       ? '正在搜索…'
       : step.status === 'error'
@@ -60,19 +75,31 @@ export function AgentStep({ step }) {
       : '已识别图像内容'
     : step.title;
 
-  const meta = isSearch && step.query
-    ? `Tavily · "${step.query.slice(0, 40)}"`
+  const meta = isPlan
+    ? step.queries?.length
+      ? `搜索词：${step.queries.join(' / ')}`
+      : step.reason || null
+    : isReview
+    ? step.needMore && step.nextQueries?.length
+      ? `继续搜索：${step.nextQueries.join(' / ')}`
+      : `${step.relevantIds?.length || 0} 条相关资料`
+    : isSearch && step.query
+    ? `${roundPrefix}Tavily · "${step.query.slice(0, 40)}"`
     : isFetch
     ? step.source === 'tavily'
-      ? 'Tavily raw_content'
-      : 'r.jina.ai 代理'
+      ? `${roundPrefix}Tavily raw_content`
+      : `${roundPrefix}r.jina.ai 代理`
     : isOcr && step.model
     ? `${step.model} · 多模态备援`
     : null;
 
   const expandable =
     step.status === 'done' &&
-    ((isSearch && step.results?.length) || (isFetch && step.urls?.length) || (isOcr && step.text));
+    ((isSearch && step.results?.length) ||
+      (isFetch && step.urls?.length) ||
+      (isOcr && step.text) ||
+      (isPlan && (step.reason || step.queries?.length || step.warning)) ||
+      (isReview && (step.assessment || step.nextQueries?.length || step.warning)));
 
   return (
     <div
@@ -110,6 +137,39 @@ export function AgentStep({ step }) {
         {step.status === 'error' && step.error && (
           <div className="agent-step-meta" style={{ color: 'var(--danger)' }}>
             {step.error}
+          </div>
+        )}
+        {expanded && isPlan && (
+          <div className="agent-step-results">
+            <div className="agent-step-result">
+              {step.reason && <div className="agent-step-result-title">{step.reason}</div>}
+              {step.queries?.length > 0 && (
+                <div className="agent-step-result-url">{step.queries.join(' / ')}</div>
+              )}
+              {step.warning && (
+                <div className="agent-step-result-url" style={{ color: 'var(--warning)' }}>
+                  {step.warning}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+        {expanded && isReview && (
+          <div className="agent-step-results">
+            <div className="agent-step-result">
+              {step.assessment && <div className="agent-step-result-title">{step.assessment}</div>}
+              {step.relevantIds?.length > 0 && (
+                <div className="agent-step-result-url">相关资料：{step.relevantIds.join(' / ')}</div>
+              )}
+              {step.nextQueries?.length > 0 && (
+                <div className="agent-step-result-url">下一轮：{step.nextQueries.join(' / ')}</div>
+              )}
+              {step.warning && (
+                <div className="agent-step-result-url" style={{ color: 'var(--warning)' }}>
+                  {step.warning}
+                </div>
+              )}
+            </div>
           </div>
         )}
         {expanded && isSearch && step.results && (

@@ -995,6 +995,7 @@ function SearchSettingsPanel({ config, refreshConfig }) {
   const [maxResults, setMaxResults] = useState(config.tavilyMaxResults || 10);
   const [topK, setTopK] = useState(config.fetchTopK ?? 3);
   const [jinaFetchEnabled, setJinaFetchEnabled] = useState(!!config.jinaFetchEnabled);
+  const [maxRounds, setMaxRounds] = useState(config.searchAgentMaxRounds || 2);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
 
@@ -1003,6 +1004,7 @@ function SearchSettingsPanel({ config, refreshConfig }) {
     setMaxResults(config.tavilyMaxResults || 10);
     setTopK(config.fetchTopK ?? 3);
     setJinaFetchEnabled(!!config.jinaFetchEnabled);
+    setMaxRounds(config.searchAgentMaxRounds || 2);
   }, [config]);
 
   async function save() {
@@ -1014,6 +1016,7 @@ function SearchSettingsPanel({ config, refreshConfig }) {
         tavilyMaxResults: Number(maxResults) || 10,
         fetchTopK: Number(topK),
         jinaFetchEnabled,
+        searchAgentMaxRounds: Number(maxRounds) || 2,
       });
       await refreshConfig();
       setMsg('已保存');
@@ -1090,6 +1093,17 @@ function SearchSettingsPanel({ config, refreshConfig }) {
           desc="关闭时直接使用 Tavily 返回的网页正文；开启后改用 r.jina.ai 抓取前 N 条结果"
         >
           <Toggle on={jinaFetchEnabled} onChange={setJinaFetchEnabled} />
+        </Row>
+        <Row label="搜索规划轮次" desc="模型可根据资料相关性继续搜索的最大轮数（1–3）">
+          <input
+            className="input"
+            type="number"
+            min={1}
+            max={3}
+            style={{ width: 90 }}
+            value={maxRounds}
+            onChange={(e) => setMaxRounds(e.target.value)}
+          />
         </Row>
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 14, gap: 8 }}>
           {msg && (

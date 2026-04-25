@@ -43,6 +43,9 @@ function sanitizeConfig(input) {
   if (typeof input.jinaFetchEnabled === 'boolean') {
     out.jinaFetchEnabled = input.jinaFetchEnabled;
   }
+  if (Number.isFinite(input.searchAgentMaxRounds)) {
+    out.searchAgentMaxRounds = Math.min(3, Math.max(1, Math.floor(input.searchAgentMaxRounds)));
+  }
   return out;
 }
 
