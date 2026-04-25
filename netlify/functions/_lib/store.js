@@ -77,6 +77,7 @@ const DEFAULT_CONFIG = {
   tavilySearchDepth: 'basic',
   tavilyMaxResults: 10,
   fetchTopK: 3,
+  jinaFetchEnabled: false,
 };
 
 export async function getConfig() {

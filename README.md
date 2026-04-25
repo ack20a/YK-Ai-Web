@@ -23,11 +23,11 @@ React + Vite 构建、Netlify Functions 提供后端代理与持久化。
 - 用户管理：新建、改名、改角色、启停、删除、重置密码
 - 系统提示词：全局 + 按模型覆盖（服务端注入，前端不可篡改）
 - OCR 模型：选择哪一个多模态模型作为伪多模态备援
-- Tavily 搜索：检索深度、结果数、抓取条数
+- Tavily 搜索：检索深度、结果数、抓取条数、Jina 抓取开关
 
 ### Agent 能力
-- **Tavily 搜索**：服务端代理 `/api/search`
-- **网页抓取**：服务端代理 `/api/fetch?url=…`，转发到 `https://r.jina.ai/<url>` 提取纯文本以绕过常见反爬
+- **Tavily 搜索/抓取**：服务端代理 `/api/search`，默认直接返回搜索结果与网页正文
+- **Jina 抓取**：可选服务端代理 `/api/fetch?url=…`，开启后转发到 `https://r.jina.ai/<url>` 提取纯文本
 - **OCR 备援**：仅文本模型收到图像时，先调用管理员配置的多模态模型识别，再把识别结果与原问题拼接送给目标模型
 
 ---
@@ -119,8 +119,8 @@ npm run build
 │   ├── config.js
 │   ├── users.js
 │   ├── chat.js               # SSE 透传
-│   ├── search.js             # Tavily 代理
-│   ├── fetch.js              # r.jina.ai 代理
+│   ├── search.js             # Tavily 搜索 + 正文代理
+│   ├── fetch.js              # 可选 r.jina.ai 正文代理
 │   └── usage.js              # 用量统计 GET/POST
 └── src/
     ├── main.jsx

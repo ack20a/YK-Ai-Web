@@ -1,4 +1,4 @@
-// URL fetcher proxied through r.jina.ai for clean readable plain text.
+// Optional URL fetcher proxied through r.jina.ai for clean readable plain text.
 // Authenticated. Hard cap on response size to keep the model's context lean.
 import { requireAuth, jsonResponse } from './_lib/auth.js';
 

@@ -3,6 +3,18 @@
 import { api } from './api.js';
 import { uid, parseStream, tokenEstimate } from './utils.js';
 
+const MAX_FETCH_TEXT_CHARS = 80 * 1024;
+
+function trimFetchedText(text) {
+  const value = String(text || '').trim();
+  if (value.length <= MAX_FETCH_TEXT_CHARS) return value;
+  return value.slice(0, MAX_FETCH_TEXT_CHARS) + '\n…（已截断）';
+}
+
+function toDisplayResults(results) {
+  return (results || []).map(({ raw_content: _rawContent, ...result }) => result);
+}
+
 function buildSearchContext(searchResults, fetched) {
   const lines = [];
   if (searchResults?.length) {
@@ -13,9 +25,10 @@ function buildSearchContext(searchResults, fetched) {
     });
   }
   if (fetched?.length) {
-    lines.push('\n以下是其中部分网页的正文（已通过 r.jina.ai 提取，可能被截断）：');
+    lines.push('\n以下是其中部分网页的正文（可能被截断）：');
     fetched.forEach((f, i) => {
-      lines.push(`\n--- 页面 ${i + 1}: ${f.url} ---\n${f.text}`);
+      const source = f.source === 'jina' ? 'r.jina.ai' : 'Tavily';
+      lines.push(`\n--- 页面 ${i + 1}: ${f.url}（${source}）---\n${f.text}`);
     });
   }
   if (!lines.length) return '';
@@ -134,6 +147,8 @@ export function startChat({
 
       // 1) Optional web search agent
       if (webSearchEnabled && prompt) {
+        const useJinaFetch = !!config?.jinaFetchEnabled;
+        const requestedTopK = Math.max(0, Math.min(10, Number(config?.fetchTopK ?? 3) || 0));
         const stepId = uid('step');
         onAgent({
           type: 'add',
@@ -144,12 +159,13 @@ export function startChat({
           const res = await api.search(prompt, {
             max_results: config?.tavilyMaxResults || 10,
             search_depth: config?.tavilySearchDepth || 'basic',
+            include_raw_content: !useJinaFetch && requestedTopK > 0,
           });
           results = Array.isArray(res?.results) ? res.results : [];
           onAgent({
             type: 'update',
             id: stepId,
-            patch: { status: 'done', count: results.length, results },
+            patch: { status: 'done', count: results.length, results: toDisplayResults(results) },
           });
         } catch (e) {
           onAgent({
@@ -159,33 +175,52 @@ export function startChat({
           });
         }
 
-        // 2) Fetch top-k pages
-        const topK = Math.max(0, Math.min(results.length, config?.fetchTopK ?? 3));
+        // 2) Fetch top-k pages. Default to Tavily raw_content; Jina is an optional fallback path.
+        const topK = Math.max(0, Math.min(results.length, requestedTopK));
         const fetched = [];
         if (topK > 0) {
           const urls = results.slice(0, topK).map((r) => r.url).filter(Boolean);
           const fetchStepId = uid('step');
-          onAgent({
-            type: 'add',
-            step: {
-              id: fetchStepId,
-              kind: 'fetch',
-              status: 'running',
-              urls,
-              count: urls.length,
-            },
-          });
-          await Promise.all(
-            urls.map(async (u) => {
-              try {
-                const text = await api.fetchUrl(u);
-                fetched.push({ url: u, text });
-              } catch (e) {
-                fetched.push({ url: u, text: `（抓取失败：${e.message || e}）` });
-              }
-            })
-          );
-          onAgent({ type: 'update', id: fetchStepId, patch: { status: 'done' } });
+          if (useJinaFetch) {
+            onAgent({
+              type: 'add',
+              step: {
+                id: fetchStepId,
+                kind: 'fetch',
+                source: 'jina',
+                status: 'running',
+                urls,
+                count: urls.length,
+              },
+            });
+            await Promise.all(
+              urls.map(async (u) => {
+                try {
+                  const text = await api.fetchUrl(u);
+                  fetched.push({ url: u, text: trimFetchedText(text), source: 'jina' });
+                } catch (e) {
+                  fetched.push({ url: u, text: `（抓取失败：${e.message || e}）`, source: 'jina' });
+                }
+              })
+            );
+            onAgent({ type: 'update', id: fetchStepId, patch: { status: 'done' } });
+          } else {
+            results.slice(0, topK).forEach((r) => {
+              const text = trimFetchedText(r.raw_content || r.content || '');
+              if (r.url && text) fetched.push({ url: r.url, text, source: 'tavily' });
+            });
+            onAgent({
+              type: 'add',
+              step: {
+                id: fetchStepId,
+                kind: 'fetch',
+                source: 'tavily',
+                status: 'done',
+                urls,
+                count: fetched.length,
+              },
+            });
+          }
         }
 
         const ctx = buildSearchContext(results, fetched);

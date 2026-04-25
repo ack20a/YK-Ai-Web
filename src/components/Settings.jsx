@@ -99,7 +99,7 @@ function GeneralTab({ state, dispatch }) {
 function SearchTab({ state, dispatch }) {
   return (
     <div>
-      <Row label="启用网络搜索" desc="允许通过 Tavily 检索网页，并经 r.jina.ai 抓取正文">
+      <Row label="启用网络搜索" desc="允许通过 Tavily 检索网页，并获取网页正文作为上下文">
         <Toggle on={state.webSearchEnabled} onChange={() => dispatch({ type: 'toggleWebSearch' })} />
       </Row>
       <div
@@ -115,11 +115,11 @@ function SearchTab({ state, dispatch }) {
       >
         <strong>搜索能力说明</strong>
         <br />
-        • 检索：经 Tavily 返回结果，再选取若干篇通过 <code style={{ fontFamily: 'var(--font-mono)' }}>r.jina.ai</code> 抓取正文
+        • 检索与正文：默认由 Tavily 返回搜索结果和网页正文
         <br />
-        • 抓取得到的纯文本会作为上下文提供给模型作答
+        • 兼容模式：管理员可开启 <code style={{ fontFamily: 'var(--font-mono)' }}>r.jina.ai</code> 抓取正文
         <br />
-        • 检索深度、结果数与抓取条数由管理员在控制台配置
+        • 检索深度、结果数、抓取条数与 Jina 开关由管理员在控制台配置
       </div>
     </div>
   );

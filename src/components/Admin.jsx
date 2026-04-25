@@ -994,6 +994,7 @@ function SearchSettingsPanel({ config, refreshConfig }) {
   const [depth, setDepth] = useState(config.tavilySearchDepth || 'basic');
   const [maxResults, setMaxResults] = useState(config.tavilyMaxResults || 10);
   const [topK, setTopK] = useState(config.fetchTopK ?? 3);
+  const [jinaFetchEnabled, setJinaFetchEnabled] = useState(!!config.jinaFetchEnabled);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
 
@@ -1001,6 +1002,7 @@ function SearchSettingsPanel({ config, refreshConfig }) {
     setDepth(config.tavilySearchDepth || 'basic');
     setMaxResults(config.tavilyMaxResults || 10);
     setTopK(config.fetchTopK ?? 3);
+    setJinaFetchEnabled(!!config.jinaFetchEnabled);
   }, [config]);
 
   async function save() {
@@ -1011,6 +1013,7 @@ function SearchSettingsPanel({ config, refreshConfig }) {
         tavilySearchDepth: depth,
         tavilyMaxResults: Number(maxResults) || 10,
         fetchTopK: Number(topK),
+        jinaFetchEnabled,
       });
       await refreshConfig();
       setMsg('已保存');
@@ -1027,7 +1030,7 @@ function SearchSettingsPanel({ config, refreshConfig }) {
         <div>
           <div className="admin-section-title">搜索（Tavily）</div>
           <div className="admin-section-desc">
-            网络搜索由 Tavily 驱动，密钥保存在服务端环境变量 <code>TAVILY_API_KEY</code>
+            网络搜索与默认网页正文由 Tavily 驱动，密钥保存在服务端环境变量 <code>TAVILY_API_KEY</code>
           </div>
         </div>
       </div>
@@ -1070,7 +1073,7 @@ function SearchSettingsPanel({ config, refreshConfig }) {
         </Row>
         <Row
           label="抓取条数"
-          desc="对前 N 条结果调用 r.jina.ai 抓取正文（0 表示只检索不抓取）"
+          desc="对前 N 条结果获取网页正文（0 表示只检索不抓取正文）"
         >
           <input
             className="input"
@@ -1081,6 +1084,12 @@ function SearchSettingsPanel({ config, refreshConfig }) {
             value={topK}
             onChange={(e) => setTopK(e.target.value)}
           />
+        </Row>
+        <Row
+          label="使用 Jina 抓取"
+          desc="关闭时直接使用 Tavily 返回的网页正文；开启后改用 r.jina.ai 抓取前 N 条结果"
+        >
+          <Toggle on={jinaFetchEnabled} onChange={setJinaFetchEnabled} />
         </Row>
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 14, gap: 8 }}>
           {msg && (

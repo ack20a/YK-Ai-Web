@@ -28,6 +28,7 @@ export function AgentStep({ step }) {
   const isSearch = step.kind === 'search';
   const isFetch = step.kind === 'fetch';
   const isOcr = step.kind === 'ocr';
+  const fetchSource = step.source === 'tavily' ? 'Tavily' : 'r.jina.ai';
 
   const icon = isSearch ? (
     <I.Search size={14} />
@@ -47,10 +48,10 @@ export function AgentStep({ step }) {
       : `已检索 ${step.count || 0} 条结果`
     : isFetch
     ? step.status === 'running'
-      ? `正在抓取 ${step.count || 0} 个网页…`
+      ? `正在通过 ${fetchSource} 抓取 ${step.count || 0} 个网页…`
       : step.status === 'error'
       ? '抓取失败'
-      : `已通过 r.jina.ai 抓取 ${step.count || 0} 个网页`
+      : `已通过 ${fetchSource} 获取 ${step.count || 0} 个网页正文`
     : isOcr
     ? step.status === 'running'
       ? `正在调用「${step.model || 'OCR'}」识别图像…`
@@ -62,7 +63,9 @@ export function AgentStep({ step }) {
   const meta = isSearch && step.query
     ? `Tavily · "${step.query.slice(0, 40)}"`
     : isFetch
-    ? 'r.jina.ai 代理'
+    ? step.source === 'tavily'
+      ? 'Tavily raw_content'
+      : 'r.jina.ai 代理'
     : isOcr && step.model
     ? `${step.model} · 多模态备援`
     : null;
@@ -131,13 +134,15 @@ export function AgentStep({ step }) {
             {step.urls.map((u, i) => (
               <a
                 key={i}
-                href={`https://r.jina.ai/${u}`}
+                href={step.source === 'tavily' ? u : `https://r.jina.ai/${u}`}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="agent-step-result"
                 onClick={(e) => e.stopPropagation()}
               >
-                <div className="agent-step-result-url">https://r.jina.ai/{u}</div>
+                <div className="agent-step-result-url">
+                  {step.source === 'tavily' ? u : `https://r.jina.ai/${u}`}
+                </div>
               </a>
             ))}
           </div>

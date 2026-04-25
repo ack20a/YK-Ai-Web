@@ -40,6 +40,9 @@ function sanitizeConfig(input) {
   if (Number.isFinite(input.fetchTopK)) {
     out.fetchTopK = Math.min(10, Math.max(0, Math.floor(input.fetchTopK)));
   }
+  if (typeof input.jinaFetchEnabled === 'boolean') {
+    out.jinaFetchEnabled = input.jinaFetchEnabled;
+  }
   return out;
 }
 
