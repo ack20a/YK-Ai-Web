@@ -175,6 +175,26 @@ function normalizeRelevantIds(value, fetched) {
   return [...new Set(normalized)];
 }
 
+function cleanOneLine(text, max = 120) {
+  return trimText(String(text || '').replace(/\s+/g, ' '), max);
+}
+
+function citationSourcesFromFetched(fetched) {
+  const seen = new Set();
+  return (fetched || [])
+    .filter((f) => f?.id && f?.url && !seen.has(f.url) && (seen.add(f.url), true))
+    .map((f) => ({ id: f.id, title: cleanOneLine(f.title || f.url), url: f.url }));
+}
+
+function buildCitationFooter(sources) {
+  if (!sources?.length) return '';
+  const lines = ['\n\n---', '', '**引用来源**'];
+  sources.forEach((source) => {
+    lines.push(`- [${source.id}] ${source.title} - ${source.url}`);
+  });
+  return lines.join('\n');
+}
+
 async function reviewSearchRound({ model, prompt, history, round, fetched, results, signal, onAgent }) {
   const stepId = uid('step');
   onAgent({
@@ -245,6 +265,10 @@ function buildSearchContext(searchResults, fetched, reviews = []) {
     });
   }
   if (fetched?.length) {
+    lines.push('\n可引用来源编号（正文引用时只需写 [S1] 这类编号）：');
+    fetched.forEach((f) => {
+      if (f.id && f.url) lines.push(`[${f.id}] ${cleanOneLine(f.title || f.url)} - ${f.url}`);
+    });
     lines.push('\n以下是其中部分网页的正文（可能被截断）：');
     fetched.forEach((f, i) => {
       const source = f.source === 'jina' ? 'r.jina.ai' : 'Tavily';
@@ -253,7 +277,7 @@ function buildSearchContext(searchResults, fetched, reviews = []) {
     });
   }
   if (!lines.length) return '';
-  lines.push('\n请基于以上资料作答；引用具体事实时附上对应链接。如资料不足，请明确说明。');
+  lines.push('\n请基于以上资料作答；引用具体事实时优先使用 [S1] 这类来源编号，无需重复粘贴完整 URL，也不需要单独列来源，系统会自动附引用来源列表。如资料不足，请明确说明。');
   return lines.join('\n');
 }
 
@@ -364,6 +388,7 @@ export function startChat({
   async function run() {
     try {
       const augContext = [];
+      let citationSources = [];
 
       // 1) Optional web search agent
       if (webSearchEnabled && prompt) {
@@ -520,6 +545,7 @@ export function startChat({
 
         const relevantFetched = allFetched.filter((f) => relevantIds.has(f.id));
         const fetchedForContext = relevantFetched.length ? relevantFetched : reviews.length ? [] : allFetched;
+        citationSources = citationSourcesFromFetched(fetchedForContext);
         const ctx = buildSearchContext(toDisplayResults(allResults), fetchedForContext, reviews);
         if (ctx) augContext.push(ctx);
       }
@@ -572,9 +598,11 @@ export function startChat({
         throw new Error(msg || `上游错误（${res.status}）`);
       }
       const { text, usage } = await readSseStream(res, { onChunk, signal: controller.signal });
+      const finalText = citationSources.length ? text + buildCitationFooter(citationSources) : text;
+      if (finalText !== text) onChunk(finalText);
 
       const elapsed = (performance.now() - startedAt) / 1000;
-      const parsed = parseStream(text);
+      const parsed = parseStream(finalText);
       const completionTokens =
         usage?.completion_tokens ?? tokenEstimate((parsed.thinking || '') + (parsed.content || ''));
       const promptTokens = usage?.prompt_tokens ?? tokenEstimate(prompt || '');

@@ -117,7 +117,7 @@ function renderInline(text) {
     (_, label, url, title) => stash(renderLink(url, label, title))
   );
 
-  let html = escapeHtml(source);
+  let html = escapeHtml(source).replace(/&lt;br\s*\/?&gt;/gi, '<br />');
   html = html
     .replace(/(\*\*|__)([\s\S]+?)\1/g, '<strong>$2</strong>')
     .replace(/~~([\s\S]+?)~~/g, '<del>$1</del>')
