@@ -129,7 +129,7 @@ function renderInline(text) {
 
   let source = String(text || '');
   source = source.replace(/`([^`\n]+)`/g, (_, code) => stash(`<code>${escapeHtml(code)}</code>`));
-  source = source.replace(/\\\(([\s\S]+?)\\\)/g, (_, tex) => stash(renderMath(tex, false)));
+  source = source.replace(/(\\{1,2})\(([\s\S]+?)\1\)/g, (_, _slash, tex) => stash(renderMath(tex, false)));
   source = source.replace(/(^|[^\\$])\$([^$\n]+?)\$(?!\$)/g, (_, lead, tex) => `${lead}${stash(renderMath(tex, false))}`);
   source = source.replace(
     /\[([^\]\n]+)\]\((<?[^\s)>]+>?)(?:\s+["']([^"']*)["'])?\)/g,
@@ -164,8 +164,15 @@ function isRule(line) {
 }
 
 function isDisplayMathStart(line) {
+  return !!getDisplayMathDelimiters(line);
+}
+
+function getDisplayMathDelimiters(line) {
   const trimmed = line.trim();
-  return trimmed.startsWith('$$') || trimmed.startsWith('\\[');
+  if (trimmed.startsWith('$$')) return { open: '$$', close: '$$' };
+  if (trimmed.startsWith('\\\\[')) return { open: '\\\\[', close: '\\\\]' };
+  if (trimmed.startsWith('\\[')) return { open: '\\[', close: '\\]' };
+  return null;
 }
 
 function splitTableRow(line) {
@@ -266,9 +273,8 @@ function renderCodeBlock(lines, start) {
 
 function renderDisplayMath(lines, start) {
   const trimmed = lines[start].trim();
-  const dollar = trimmed.startsWith('$$');
-  const open = dollar ? '$$' : '\\[';
-  const close = dollar ? '$$' : '\\]';
+  const delimiters = getDisplayMathDelimiters(lines[start]);
+  const { open, close } = delimiters || { open: '$$', close: '$$' };
   const first = trimmed.slice(open.length);
   const math = [];
 
