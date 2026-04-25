@@ -1,4 +1,5 @@
 // Shared client utilities: id, persistence, theme, light markdown, formatting.
+import katex from 'katex';
 
 const STORAGE_KEY = 'yk-ai-web/v1';
 const TOKEN_KEY = 'yk-ai-web/token';
@@ -56,6 +57,22 @@ export function applyTheme(theme) {
 
 const INLINE_TOKEN = '\u0000yk-md-token-';
 
+function renderMath(tex, displayMode = false) {
+  const source = String(tex || '').trim();
+  if (!source) return '';
+  try {
+    return katex.renderToString(source, {
+      displayMode,
+      throwOnError: false,
+      strict: false,
+      trust: false,
+      output: 'html',
+    });
+  } catch {
+    return `<code>${escapeHtml(source)}</code>`;
+  }
+}
+
 function escapeHtml(value) {
   return String(value)
     .replace(/&/g, '&amp;')
@@ -112,6 +129,8 @@ function renderInline(text) {
 
   let source = String(text || '');
   source = source.replace(/`([^`\n]+)`/g, (_, code) => stash(`<code>${escapeHtml(code)}</code>`));
+  source = source.replace(/\\\(([\s\S]+?)\\\)/g, (_, tex) => stash(renderMath(tex, false)));
+  source = source.replace(/(^|[^\\$])\$([^$\n]+?)\$(?!\$)/g, (_, lead, tex) => `${lead}${stash(renderMath(tex, false))}`);
   source = source.replace(
     /\[([^\]\n]+)\]\((<?[^\s)>]+>?)(?:\s+["']([^"']*)["'])?\)/g,
     (_, label, url, title) => stash(renderLink(url, label, title))
@@ -142,6 +161,11 @@ function isListLine(line) {
 
 function isRule(line) {
   return /^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line);
+}
+
+function isDisplayMathStart(line) {
+  const trimmed = line.trim();
+  return trimmed.startsWith('$$') || trimmed.startsWith('\\[');
 }
 
 function splitTableRow(line) {
@@ -240,6 +264,36 @@ function renderCodeBlock(lines, start) {
   };
 }
 
+function renderDisplayMath(lines, start) {
+  const trimmed = lines[start].trim();
+  const dollar = trimmed.startsWith('$$');
+  const open = dollar ? '$$' : '\\[';
+  const close = dollar ? '$$' : '\\]';
+  const first = trimmed.slice(open.length);
+  const math = [];
+
+  if (first.includes(close)) {
+    math.push(first.slice(0, first.indexOf(close)));
+    return { html: `<div class="math-display">${renderMath(math.join('\n'), true)}</div>`, next: start + 1 };
+  }
+
+  if (first) math.push(first);
+  let index = start + 1;
+  while (index < lines.length) {
+    const line = lines[index];
+    const closeIndex = line.indexOf(close);
+    if (closeIndex !== -1) {
+      math.push(line.slice(0, closeIndex));
+      index += 1;
+      break;
+    }
+    math.push(line);
+    index += 1;
+  }
+
+  return { html: `<div class="math-display">${renderMath(math.join('\n'), true)}</div>`, next: index };
+}
+
 function renderList(lines, start) {
   const ordered = /^\s{0,3}\d+[.)]\s+/.test(lines[start]);
   const pattern = ordered ? /^\s{0,3}\d+[.)]\s+(.+)$/ : /^\s{0,3}[-*+]\s+(.+)$/;
@@ -282,6 +336,7 @@ function startsBlock(lines, index) {
   return (
     !line.trim() ||
     isFenceStart(line) ||
+    isDisplayMathStart(line) ||
     /^\s{0,3}#{1,6}\s+/.test(line) ||
     isRule(line) ||
     /^\s{0,3}>/.test(line) ||
@@ -303,6 +358,13 @@ function renderBlocks(lines) {
 
     if (isFenceStart(line)) {
       const block = renderCodeBlock(lines, index);
+      parts.push(block.html);
+      index = block.next;
+      continue;
+    }
+
+    if (isDisplayMathStart(line)) {
+      const block = renderDisplayMath(lines, index);
       parts.push(block.html);
       index = block.next;
       continue;

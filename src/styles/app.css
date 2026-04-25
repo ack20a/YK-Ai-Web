@@ -570,6 +570,18 @@
   display: block;
   white-space: pre;
 }
+.message-assistant-content .katex {
+  font-size: 1.03em;
+}
+.message-assistant-content .math-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  margin: 12px 0;
+  padding: 2px 0;
+}
+.message-assistant-content .katex-display {
+  margin: 0;
+}
 .message-assistant-content strong {
   font-weight: 600;
 }
